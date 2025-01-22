@@ -1,0 +1,469 @@
+---
+title: "Análise de Criticidade de Incrustação no Pré-Sal empregando Métodos Baseados em Dados - Mateus de Araujo Fernandes"
+output: html_notebook
+---
+
+```{r}
+
+# Carregamento de Bibliotecas usadas no projeto
+
+library(tidyverse)  # Trabalha com tabelas e gráficos
+library(sf)         # Processamento de dados espaciais
+library(sp)         # Processamento de dados espaciais
+library(raster)     # Processamento de rasters em coordenadas espaciais
+
+#library(gstat)      # Interpolação por Kriging
+#library(fields)     # Interpolação por Thin Plate Spline
+library(interp)     # Interpolação por Triangulação (Linear)
+#library(mgcv)       # Interpolação por Spatial GAM
+#library(automap)    # Automatic approach to Kriging
+
+# Funções para gráficos
+library(patchwork)  
+library(viridis)    
+library(ggplot2)
+library(hrbrthemes)
+
+#install.packages("plotly")
+library(plotly)
+
+```
+
+
+```{r}
+
+# ----------- Carregamento e ajuste dos dados de análises químicas ---------- #
+
+# Leitura do arquivo de dados
+dados_agua <- read.csv("C:/Users/bevq/OneDrive - PETROBRAS/Documents/R/R_Projects/Consulta_Analise_Agua_TUP.csv", sep = ";")
+
+# Inspeção da primeiras linhas da tabela importada
+head(dados_agua)
+# valores já foram importados nos formatos adequados
+
+# Limpa as strings com os nomes de ensaios (remove espaços e caracteres especiais)
+#str_replace_all(dados_agua$Ensaio, "[^[:alnum:]]", "")
+
+# Segrega dados de água produzida
+dados_agua_prod <- dados_agua[(dados_agua$Origem=="PROD"), ]
+dados_agua_prod <- dados_agua_prod[, -c(3,4,6,9)] 
+dados_agua_prod
+
+# Remoção de linhas e colunas dispensáveis para esse trabalho
+dados_agua <- dados_agua[(dados_agua$Origem=="FORM"), ]
+dados_agua <- dados_agua[, -c(3,4,5,6,9)] 
+dados_agua
+
+```
+
+```{r}
+
+# Substitui NA's por 0's
+dados_agua_prod[is.na(dados_agua_prod)] <- 0
+
+# Conversão para valores numéricos (preenche NULLs com NAs por coerção) e sumário estatístico das variáveis numéricas
+dados_agua_prod$Topo <- as.numeric(dados_agua_prod$Topo)
+class(dados_agua_prod$Topo)
+summary(dados_agua_prod$Topo)
+
+dados_agua_prod$Valor <- as.numeric(dados_agua_prod$Valor)
+class(dados_agua_prod$Valor)
+summary(dados_agua_prod$Valor)
+
+dados_agua_prod$Risco <- as.numeric(dados_agua_prod$Risco)
+class(dados_agua_prod$Risco)
+summary(dados_agua_prod$Risco)
+
+
+
+# >>> Inspeção mostra que todos os valores estão em formato adequado
+
+```
+
+```{r}
+
+# Bibliotecas adicionais para manipulação de tabelas
+
+library(tidyr)
+library(dplyr)
+library(readr)
+
+# Organiza os dados da tabela em um formato com cada íon em uma coluna (pivoteamento)
+dados_agua_wide <- pivot_wider(dados_agua_prod,
+             # id_cols = optional vector of unaffected columns,
+             names_from = c(Ensaio),
+             values_from = c(Valor),
+             names_sep = "_",
+             values_fn = mean)  # para ensaios no mesmo poço, calcula a média
+
+# Checa se há valores NA e apresenta o sumário dos dados
+dados_agua_wide[is.na(dados_agua_wide)] <- 0
+dados_agua_wide
+summary(dados_agua_wide)
+
+dados_agua_wide$Data <- as.Date(dados_agua_wide$Data, format = "%Y-%m-%d")
+class(dados_agua_wide$Data)
+summary(dados_agua_wide$Data)
+
+```
+
+```{r}
+
+# Retira as variáveis de menor importância (mantidas as que possuem mais medições)
+dados_agua_essenc <- dados_agua_wide[, c(1,3,5,7,9,11,12,13,18,20,23,24,4)]
+dados_agua_essenc
+
+```
+
+```{r}
+
+# Plota correlação entre variáveis para o conjunto reduzido
+
+cor(dados_agua_essenc[,-c(1,2,13)])
+corrplot(cor(dados_agua_essenc[,-c(1,2,13)]), type="upper", order="hclust", tl.col="black", tl.srt=45, tl.cex = 1.15)
+
+```
+
+
+```{r}
+
+# Calcula as componentes principais com normalização:
+dados_agua_essenc.pca2 <- prcomp(dados_agua_essenc[,-c(1,2,13)], scale.=TRUE)   #desconsidera nome, data e risco
+dados_agua_essenc.pca2
+
+# Apresenta resumo das componentes principais:
+summary(dados_agua_essenc.pca2)
+
+# Mostra as primeiras componentes principais:
+head(dados_agua_essenc.pca2$x)
+
+# calcula desvio padrao de cada componente principal
+pr_std_dev <- dados_agua_essenc.pca2$sdev
+
+# calcula variancia
+pr_var <- pr_std_dev^2
+
+# mostra variancia das 4 componentes principais
+pr_var
+
+# Proporcao da variancia explicada:
+prop_varex <- pr_var/sum(pr_var)
+prop_varex
+
+# Visualiza proporcao da variancia explicada:
+plot(prop_varex, xlab="Componentes Principais", 
+     ylab = "Proporcao de Variancia Explicada", type = "b")
+
+# Visualiza variancia acumulada:
+plot(cumsum(prop_varex), xlab = "Componentes Principais",
+     ylab = "Variancia Explicada Acumulada", type = "b")
+
+# Exibicao de como os atributos serao transformados:
+biplot(dados_agua_essenc.pca2, xlab="Componente Principal 1", 
+       ylab="Componente Principal 2", scale=0)
+
+# Visualizacao de componentes principais:
+plot(dados_agua_essenc.pca2$x[,1:2], col=as.numeric(unlist(dados_agua_essenc[,3])))  
+#legend("bottomleft", legend = list("Baixa", "Média", "Alta", "Altíssima"), col = 1:5, pch = 19, bty = "n")
+
+```
+
+```{r}
+
+dados_LL2 <- dados_agua_essenc[dados_agua_essenc$Poco == "7-LL-2D-RJS",]
+dados_LL2
+
+# Remove linhas com análise de referência sem valores (provável análise somente de traçador)
+dados_LL2 <- dados_LL2[(dados_LL2$ACETATO>0), ]
+dados_LL2
+
+# Calcula as componentes principais com normalização:
+dados_LL2.pca2 <- prcomp(dados_LL2[,-c(1,2,13)], scale.=TRUE)
+dados_LL2.pca2
+
+# Apresenta resumo das componentes principais:
+summary(dados_LL2.pca2)
+
+# Mostra as primeiras componentes principais:
+head(dados_LL2.pca2$x)
+
+# calcula desvio padrao de cada componente principal
+pr_std_dev <- dados_LL2.pca2$sdev
+
+# calcula variancia
+pr_var <- pr_std_dev^2
+
+# mostra variancia das 4 componentes principais
+pr_var
+
+# Proporcao da variancia explicada:
+prop_varex <- pr_var/sum(pr_var)
+prop_varex
+
+# Visualiza proporcao da variancia explicada:
+plot(prop_varex, xlab="Componentes Principais", 
+     ylab = "Proporcao de Variancia Explicada", type = "b")
+
+# Visualiza variancia acumulada:
+plot(cumsum(prop_varex), xlab = "Componentes Principais",
+     ylab = "Variancia Explicada Acumulada", type = "b")
+
+# Exibicao de como os atributos serao transformados:
+biplot(dados_LL2.pca2, xlab="Componente Principal 1", 
+       ylab="Componente Principal 2", scale=0)
+
+# Visualizacao de componentes principais:
+plot(dados_LL2.pca2$x[,1:2], col=as.numeric(unlist(dados_LL2[,2])), pch = 19)  
+#legend("bottomleft", legend = list("Baixa", "Média", "Alta", "Altíssima"), col = 1:5, pch = 19, bty = "n")
+
+
+df_LL2_pca3 <- data.frame(dados_LL2.pca2$x[,1:3])
+df_LL2_pca3
+
+# Visualizacao de componentes principais:
+fig_3d <- plot_ly(df_LL2_pca3, x = ~PC1, y = ~PC2, z = ~PC3, color = as.numeric(unlist(dados_LL2[,2])))
+fig_3d
+
+
+```
+```{r}
+
+dados_LL8H <- dados_agua_essenc[dados_agua_essenc$Poco == "7-LL-8H-RJS",]
+dados_LL8H
+
+
+# Remove linhas com análise de referência sem valores (provável análise somente de traçador)
+dados_LL8H <- dados_LL8H[(dados_LL8H$ACETATO>0), ]
+dados_LL8H
+
+
+# Calcula as componentes principais com normalização:
+dados_LL8H.pca2 <- prcomp(dados_LL8H[,-c(1,2,13)], scale.=TRUE)
+dados_LL8H.pca2
+
+# Apresenta resumo das componentes principais:
+summary(dados_LL8H.pca2)
+
+# Mostra as primeiras componentes principais:
+head(dados_LL8H.pca2$x)
+
+# calcula desvio padrao de cada componente principal
+pr_std_dev <- dados_LL8H.pca2$sdev
+
+# calcula variancia
+pr_var <- pr_std_dev^2
+
+# mostra variancia das 4 componentes principais
+pr_var
+
+# Proporcao da variancia explicada:
+prop_varex <- pr_var/sum(pr_var)
+prop_varex
+
+# Visualiza proporcao da variancia explicada:
+plot(prop_varex, xlab="Componentes Principais", 
+     ylab = "Proporcao de Variancia Explicada", type = "b")
+
+# Visualiza variancia acumulada:
+plot(cumsum(prop_varex), xlab = "Componentes Principais",
+     ylab = "Variancia Explicada Acumulada", type = "b")
+
+# Exibicao de como os atributos serao transformados:
+biplot(dados_LL8H.pca2, xlab="Componente Principal 1", 
+       ylab="Componente Principal 2", scale=0)
+
+# Visualizacao de componentes principais:
+plot(dados_LL8H.pca2$x[,1:2], col=as.numeric(unlist(dados_LL8H[,2])), pch = 19)  
+#legend("bottomleft", legend = list("Baixa", "Média", "Alta", "Altíssima"), col = 1:5, pch = 19, bty = "n")
+
+df_LL8H_pca3 <- data.frame(dados_LL8H.pca2$x[,1:3])
+df_LL8H_pca3
+
+# Visualizacao de componentes principais:
+fig_3d <- plot_ly(df_LL8H_pca3, x = ~PC1, y = ~PC2, z = ~PC3, color = as.numeric(unlist(dados_LL8H[,2])))
+fig_3d
+
+
+```
+```{r}
+
+
+
+dados_LL79 <- dados_agua_essenc[dados_agua_essenc$Poco == "7-LL-79D-RJS",]
+dados_LL79
+
+
+# Remove linhas com análise de referência sem valores (provável análise somente de traçador)
+dados_LL79 <- dados_LL79[(dados_LL79$ACETATO>0), ]
+dados_LL79
+
+
+# Calcula as componentes principais com normalização:
+dados_LL79.pca2 <- prcomp(dados_LL79[,-c(1,2,13)], scale.=TRUE)
+dados_LL79.pca2
+
+# Apresenta resumo das componentes principais:
+summary(dados_LL79.pca2)
+
+# Mostra as primeiras componentes principais:
+head(dados_LL79.pca2$x)
+
+# calcula desvio padrao de cada componente principal
+pr_std_dev <- dados_LL79.pca2$sdev
+
+# calcula variancia
+pr_var <- pr_std_dev^2
+
+# mostra variancia das 4 componentes principais
+pr_var
+
+# Proporcao da variancia explicada:
+prop_varex <- pr_var/sum(pr_var)
+prop_varex
+
+# Visualiza proporcao da variancia explicada:
+plot(prop_varex, xlab="Componentes Principais", 
+     ylab = "Proporcao de Variancia Explicada", type = "b")
+
+# Visualiza variancia acumulada:
+plot(cumsum(prop_varex), xlab = "Componentes Principais",
+     ylab = "Variancia Explicada Acumulada", type = "b")
+
+# Exibicao de como os atributos serao transformados:
+biplot(dados_LL79.pca2, xlab="Componente Principal 1", 
+       ylab="Componente Principal 2", scale=0)
+
+# Visualizacao de componentes principais:
+plot(dados_LL79.pca2$x[,1:2], col=as.numeric(unlist(dados_LL79[,2])), pch = 19)  
+#legend("bottomleft", legend = list("Baixa", "Média", "Alta", "Altíssima"), col = 1:5, pch = 19, bty = "n")
+
+df_LL79_pca3 <- data.frame(dados_LL79.pca2$x[,1:3])
+df_LL79_pca3
+
+# Visualizacao de componentes principais:
+fig_3d <- plot_ly(df_LL79_pca3, x = ~PC1, y = ~PC2, z = ~PC3, color = as.numeric(unlist(dados_LL79[,2])))
+fig_3d
+
+
+
+```
+```{r}
+
+dados_RJS646 <- dados_agua_essenc[dados_agua_essenc$Poco == "3-RJS-646",]
+dados_RJS646
+
+# Remove linhas com análise de referência sem valores (provável análise somente de traçador)
+dados_RJS646 <- dados_RJS646[(dados_RJS646$ACETATO>0), ]
+dados_RJS646
+
+# Calcula as componentes principais com normalização:
+dados_RJS646.pca2 <- prcomp(dados_RJS646[,-c(1,2,13)], scale.=TRUE)
+dados_RJS646.pca2
+
+# Apresenta resumo das componentes principais:
+summary(dados_RJS646.pca2)
+
+# Mostra as primeiras componentes principais:
+head(dados_RJS646.pca2$x)
+
+# calcula desvio padrao de cada componente principal
+pr_std_dev <- dados_RJS646.pca2$sdev
+
+# calcula variancia
+pr_var <- pr_std_dev^2
+
+# mostra variancia das 4 componentes principais
+pr_var
+
+# Proporcao da variancia explicada:
+prop_varex <- pr_var/sum(pr_var)
+prop_varex
+
+# Visualiza proporcao da variancia explicada:
+plot(prop_varex, xlab="Componentes Principais", 
+     ylab = "Proporcao de Variancia Explicada", type = "b")
+
+# Visualiza variancia acumulada:
+plot(cumsum(prop_varex), xlab = "Componentes Principais",
+     ylab = "Variancia Explicada Acumulada", type = "b")
+
+# Exibicao de como os atributos serao transformados:
+biplot(dados_RJS646.pca2, xlab="Componente Principal 1", 
+       ylab="Componente Principal 2", scale=0)
+
+# Visualizacao de componentes principais:
+plot(dados_RJS646.pca2$x[,1:2], col=as.numeric(unlist(dados_RJS646[,2])), pch = 19)  
+#legend("bottomleft", legend = list("Baixa", "Média", "Alta", "Altíssima"), col = 1:5, pch = 19, bty = "n")
+
+
+df_RJS646_pca3 <- data.frame(dados_RJS646.pca2$x[,1:3])
+df_RJS646_pca3
+
+# Visualizacao de componentes principais:
+fig_3d <- plot_ly(df_RJS646_pca3, x = ~PC1, y = ~PC2, z = ~PC3, color = as.numeric(unlist(dados_RJS646[,2])))
+fig_3d
+
+
+```
+
+
+```{r}
+
+dados_CAR <- dados_agua_essenc[dados_agua_essenc$Risco > 0,]
+dados_CAR
+
+
+# Remove linhas com análise de referência sem valores (provável análise somente de traçador)
+dados_CAR <- dados_CAR[(dados_CAR$ACETATO>0), ]
+dados_CAR
+
+
+# Calcula as componentes principais com normalização:
+dados_CAR.pca2 <- prcomp(dados_CAR[,-c(1,2,13)], scale.=TRUE)
+dados_CAR.pca2
+
+# Apresenta resumo das componentes principais:
+summary(dados_CAR.pca2)
+
+# Mostra as primeiras componentes principais:
+head(dados_CAR.pca2$x)
+
+# calcula desvio padrao de cada componente principal
+pr_std_dev <- dados_CAR.pca2$sdev
+
+# calcula variancia
+pr_var <- pr_std_dev^2
+
+# mostra variancia das 4 componentes principais
+pr_var
+
+# Proporcao da variancia explicada:
+prop_varex <- pr_var/sum(pr_var)
+prop_varex
+
+# Visualiza proporcao da variancia explicada:
+plot(prop_varex, xlab="Componentes Principais", 
+     ylab = "Proporcao de Variancia Explicada", type = "b")
+
+# Visualiza variancia acumulada:
+plot(cumsum(prop_varex), xlab = "Componentes Principais",
+     ylab = "Variancia Explicada Acumulada", type = "b")
+
+# Exibicao de como os atributos serao transformados:
+biplot(dados_CAR.pca2, xlab="Componente Principal 1", 
+       ylab="Componente Principal 2", scale=0)
+
+# Visualizacao de componentes principais:
+plot(dados_CAR.pca2$x[,1:2], col=1:4, pch = 19)  
+legend("topleft", legend = list("LL-2D", "RJS-646", "LL-79", "LL-8H"), col=1:4, pch = 19, bty = "n")
+
+df_CAR_pca3 <- data.frame(dados_CAR.pca2$x[,1:3])
+df_CAR_pca3
+
+# Visualizacao de componentes principais:
+fig_3d <- plot_ly(df_CAR_pca3, x = ~PC1, y = ~PC2, z = ~PC3, color = as.numeric(unlist(dados_CAR[,13])))
+fig_3d
+
+
+```
+

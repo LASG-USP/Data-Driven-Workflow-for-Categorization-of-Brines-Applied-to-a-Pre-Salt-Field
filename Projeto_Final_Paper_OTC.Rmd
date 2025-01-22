@@ -1,0 +1,1004 @@
+---
+title: "Análise de Criticidade de Incrustação no Pré-Sal empregando Métodos Baseados em Dados - Mateus de Araujo Fernandes"
+output: html_notebook
+---
+
+```{r}
+
+# Carregamento de Bibliotecas usadas no projeto
+
+library(tidyverse)  # Trabalha com tabelas e gráficos
+library(sf)         # Processamento de dados espaciais
+library(sp)         # Processamento de dados espaciais
+library(raster)     # Processamento de rasters em coordenadas espaciais
+
+#library(gstat)      # Interpolação por Kriging
+#library(fields)     # Interpolação por Thin Plate Spline
+library(interp)     # Interpolação por Triangulação (Linear)
+#library(mgcv)       # Interpolação por Spatial GAM
+#library(automap)    # Automatic approach to Kriging
+
+# Funções para gráficos
+library(patchwork)  
+library(viridis)    
+library(ggplot2)
+library(hrbrthemes)
+
+```
+
+
+```{r}
+
+# ----------- Carregamento e ajuste dos dados de análises químicas ---------- #
+
+# Leitura do arquivo de dados
+dados_agua <- read.csv("C:/Users/bevq/OneDrive - PETROBRAS/Documents/R/R_Projects/Consulta_Analise_Agua_TUP_ENGLISH.csv", sep = ";")
+
+# Inspeção da primeiras linhas da tabela importada
+head(dados_agua)
+# valores já foram importados nos formatos adequados
+
+# Limpa as strings com os nomes de ensaios (remove espaços e caracteres especiais)
+#str_replace_all(dados_agua$Ensaio, "[^[:alnum:]]", "")
+
+# Segrega dados de água produzida
+dados_agua_prod <- dados_agua[(dados_agua$Origem=="PROD"), ]
+dados_agua_prod <- dados_agua_prod[, -c(3,4,5,6,9)] 
+dados_agua_prod
+
+# Remoção de linhas e colunas dispensáveis para esse trabalho
+dados_agua <- dados_agua[(dados_agua$Origem=="FORM"), ]
+dados_agua <- dados_agua[, -c(3,4,5,6,9)] 
+dados_agua
+
+```
+
+```{r}
+
+# Substitui NA's por 0's
+dados_agua[is.na(dados_agua)] <- 0
+
+# Conversão para valores numéricos (preenche NULLs com NAs por coerção) e sumário estatístico das variáveis numéricas
+dados_agua$Topo <- as.numeric(dados_agua$Topo)
+class(dados_agua$Topo)
+summary(dados_agua$Topo)
+
+dados_agua$Valor <- as.numeric(dados_agua$Valor)
+class(dados_agua$Valor)
+summary(dados_agua$Valor)
+
+dados_agua$Risco <- as.numeric(dados_agua$Risco)
+class(dados_agua$Risco)
+summary(dados_agua$Risco)
+
+# >>> Inspeção mostra que todos os valores estão em formato adequado
+
+```
+
+```{r}
+
+# Bibliotecas adicionais para manipulação de tabelas
+
+library(tidyr)
+library(dplyr)
+library(readr)
+
+# Organiza os dados da tabela em um formato com cada íon em uma coluna (pivoteamento)
+dados_agua_wide <- pivot_wider(dados_agua,
+             # id_cols = optional vector of unaffected columns,
+             names_from = c(Ensaio),
+             values_from = c(Valor),
+             names_sep = "_",
+             values_fn = mean)  # para ensaios no mesmo poço, calcula a média
+
+# Checa se há valores NA e apresenta o sumário dos dados
+dados_agua_wide[is.na(dados_agua_wide)] <- 0
+dados_agua_wide
+summary(dados_agua_wide)
+
+```
+
+```{r}
+# ----  1 - Análise Preliminar:  ---- #
+# ----  PCA com todos os ensaios ---- #
+#       (apenas poços amostrados)
+
+
+# Calcula as componentes principais com normalização:
+dados_agua_wide.pca2 <- prcomp(dados_agua_wide[,4:31], scale.=TRUE)
+#dados_agua_wide.pca2
+
+# Apresenta resumo das componentes principais:
+#summary(dados_agua_wide.pca2)
+
+# Mostra as primeiras componentes principais:
+head(dados_agua_wide.pca2$x)
+
+# calcula desvio padrao de cada componente principal
+pr_std_dev <- dados_agua_wide.pca2$sdev
+
+# calcula variancia
+pr_var <- pr_std_dev^2
+
+# mostra variancia das 4 componentes principais
+pr_var
+
+# Proporcao da variancia explicada:
+prop_varex <- pr_var/sum(pr_var)
+prop_varex
+
+# Visualiza proporcao da variancia explicada:
+plot(prop_varex, xlab="Componentes Principais", 
+     ylab = "Proporcao de Variancia Explicada", type = "b")
+
+# Visualiza variancia acumulada:
+plot(cumsum(prop_varex), xlab = "Principal Components",
+     ylab = "Cumulative Variance", type = "b")
+
+# Exibicao de como os atributos serao transformados:
+biplot(dados_agua_wide.pca2, xlab="Componente Principal 1", 
+       ylab="Componente Principal 2", scale=0)
+
+# Visualizacao de componentes principais:
+plot(dados_agua_wide.pca2$x[,1:2], col = as.numeric(unlist(dados_agua_wide[,3])))
+legend("bottomleft", legend = list("Baixo", "Médio", "Alto", "Altíssimo", "Desconhecido"), col = 1:5, pch = 19, bty = "n")
+```
+```{r}
+
+# Análise das correlações entre variáveis - Conjunto completo
+
+cor(dados_agua_wide[,4:30])
+library(corrplot)
+corrplot(cor(dados_agua_wide[,4:30]), type="upper", order="hclust", tl.col="black", tl.srt=45, tl.cex = 0.6)
+
+```
+
+```{r}
+
+# ----        2 - Análise Preliminar:        ---- #
+# ----  PCA com conjunto reduzido de ensaios ---- #
+#            (apenas poços amostrados)
+
+# Retira as variáveis de menor importância (mantidas as que possuem mais medições)
+dados_agua_essenc <- dados_agua_wide[, c(1,3,4,6,7,9,10,11,13,14,17,19,23,24)]
+dados_agua_essenc
+```
+
+```{r}
+
+# Plota correlação entre variáveis para o conjunto reduzido
+
+cor(dados_agua_essenc[,-c(1,2)])
+corrplot(cor(dados_agua_essenc[,-c(1,2)]), type="upper", order="hclust", tl.col="black", tl.srt=45, tl.cex = 1.15)
+
+# >>> Correlações não mostram redundância explícita entre as variáveis
+
+```
+```{r}
+
+# Calcula as componentes principais com normalização:
+dados_agua_essenc.pca2 <- prcomp(dados_agua_essenc[,-c(1,2)], scale.=TRUE)
+dados_agua_essenc.pca2
+
+# Apresenta resumo das componentes principais:
+summary(dados_agua_essenc.pca2)
+
+# Mostra as primeiras componentes principais:
+head(dados_agua_essenc.pca2$x)
+
+# calcula desvio padrao de cada componente principal
+pr_std_dev <- dados_agua_essenc.pca2$sdev
+
+# calcula variancia
+pr_var <- pr_std_dev^2
+
+# mostra variancia das 4 componentes principais
+pr_var
+
+# Proporcao da variancia explicada:
+prop_varex <- pr_var/sum(pr_var)
+prop_varex
+
+# Visualiza proporcao da variancia explicada:
+plot(prop_varex, xlab="Componentes Principais", 
+     ylab = "Proporcao de Variancia Explicada", type = "b")
+
+# Visualiza variancia acumulada:
+plot(cumsum(prop_varex), xlab = "Principal Components",
+     ylab = "Cumulative Variance", type = "b")
+
+# Exibicao de como os atributos serao transformados:
+biplot(dados_agua_essenc.pca2, xlab="Componente Principal 1", 
+       ylab="Componente Principal 2", scale=0)
+
+# Visualizacao de componentes principais:
+plot(dados_agua_essenc.pca2$x[,1:2], col=as.numeric(unlist(dados_agua_essenc[,2])))  
+legend("bottomleft", legend = list("Baixa", "Média", "Alta", "Altíssima"), col = 1:5, pch = 19, bty = "n")
+
+```
+```{r}
+
+#install.packages("plotly")
+library(plotly)
+
+df_agua_essenc <- data.frame(dados_agua_essenc.pca2$x[,1:3])
+df_agua_essenc
+
+# Visualizacao de componentes principais:
+fig_3d <- plot_ly(df_agua_essenc, x = ~PC1, y = ~PC2, z = ~PC3, color = as.numeric(unlist(dados_agua_essenc[,2])))
+fig_3d
+
+```
+
+
+```{r}
+# ----           3 - Análise Preliminar:            ---- #
+# ----  Clustering com conjunto reduzido de ensaios ---- #
+#              (apenas poços amostrados)
+
+# Normalização
+agua_std <- scale(dados_agua_essenc[,-c(1,2)], center = TRUE, scale = TRUE)
+summary(agua_std)
+head(agua_std)
+
+# Carrega pacotes
+library(cluster)
+library(factoextra)
+library(NbClust)
+
+# Aplica a tecnica K-Means com dois grupos
+set.seed(123)
+k2 <- kmeans(agua_std, centers=2, nstart=25)
+#k2
+
+# Mostra o tamanho dos grupos
+k2$size
+
+# Mostra o numero dos grupos para cada amostra
+k2$cluster
+#head(k2$cluster, 4)
+
+# Mostra os centroides dos grupos
+k2$centers
+
+# Visualiza os resultados
+fviz_cluster(k2, data=agua_std)
+
+# Testa diferentes numeros de grupos
+k3 <- kmeans(agua_std, centers=3, nstart=25)
+k4 <- kmeans(agua_std, centers=4, nstart=25)
+k5 <- kmeans(agua_std, centers=5, nstart=25)
+
+# Mostra os agrupamentos
+p1 <- fviz_cluster(k2, geom="point", data=agua_std) + ggtitle("k=2")
+p2 <- fviz_cluster(k3, geom="point", data=agua_std) + ggtitle("k=3")
+p3 <- fviz_cluster(k4, geom="point", data=agua_std) + ggtitle("k=4")
+p4 <- fviz_cluster(k5, geom="point", data=agua_std) + ggtitle("k=5")
+
+library(gridExtra)
+grid.arrange(p1, p2, p3, p4, nrow=2)
+
+# Determina o numero de grupos
+set.seed(123)
+fviz_nbclust(agua_std, kmeans, k.max = 15, method="wss")
+
+# Determina o numero de grupos (medida de silhueta)
+fviz_nbclust(agua_std, kmeans, k.max = 15, method="silhouette")
+
+
+# Uso de conjunto de métricas para determinar o melhor k
+
+library(NbClust)
+nb <- NbClust(agua_std, distance="euclidean", 
+              min.nc=2, max.nc=10, method="complete", 
+              index="all")
+
+library(factoextra)
+fviz_nbclust(nb) + theme_minimal()
+
+
+# Plot com o melhor número de k
+fviz_cluster(k3, data = agua_std)
+
+# Adiciona classificacao aos dados originais
+agua_clust <- cbind(dados_agua_essenc, kmeans3=k3$cluster)
+agua_clust <- cbind(agua_clust, kmeans4=k4$cluster)
+agua_clust
+
+```
+```{r}
+ 
+# ----                  4 - Análise Final:                      ---- #
+# ----  Geração de Mapas com Interpolação de Dados de Análises  ---- #
+
+
+# Leitura do arquivo de dados de coordenadas dos poços
+wells_coord <- read.csv("C:/Users/bevq/OneDrive - PETROBRAS/Documents/R/R_Projects/Coord_Wells_TUP.csv", sep = ";")
+
+# Inspeção da primeiras linhas da tabela importada
+head(wells_coord)
+# valores já foram importados nos formatos adequados
+
+
+# Faz a junção dos dados da tabela de coordenadas com a tabela de análises 
+# (semelhante ao PROCV)
+
+library(dplyr)
+dados_agua_coord <- left_join(dados_agua_essenc, wells_coord, by = 'Poco')
+dados_agua_coord
+
+```
+
+```{r}
+
+# Gráfico de dispersão com coordenadas X, Y e uma das demais variáveis 
+# Exemplificado com Bario, mas basta alterar a variável em 'color'
+
+ggplot(dados_agua_coord, aes(x=X, y=Y, color=BARIO)) + 
+    geom_point(size=5) #+
+    #geom_text(label= dados_agua_coord$Poço, nudge_x = 0, nudge_y = 2500, check_overlap = T) 
+    
+```
+```{r}
+
+# Criação de um dataframe simplificado com a variável a ser interpolada para criação de mapa
+dados_bario <- dados_agua_coord[, c(15,16,4)] 
+head(dados_bario)
+
+```
+
+```{r}
+
+# Atrela as coordenadas a um sistema de referência de geolocalização
+# Ref.: https://swilke-geoscience.net/post/spatial_interpolation/
+
+sf_wells <- st_as_sf(dados_bario, coords = c("X", "Y"), crs = 25833)
+
+# Cria um grid para o mapa a ser interpolado
+# (usa uma bounding box com os limites das coordenadas no conjunto original)
+
+grd_template_sf <- sf_wells %>% 
+  st_bbox() %>% 
+  st_as_sfc() %>% 
+  st_make_grid(
+  cellsize = c(200, 200), #tamanho de cada célula no grid formado
+  what = "centers"
+  ) %>%
+  st_as_sf() %>%
+  cbind(., st_coordinates(.)) %>% 
+  st_drop_geometry() %>% 
+  mutate(Z = 0)
+
+# Transforma o grid em um raster georreferenciado
+crs_raster_format <- "+proj=utm +zone=33 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs"
+
+grd_template_raster <- grd_template_sf %>% 
+  raster::rasterFromXYZ(crs = crs_raster_format)
+```
+
+```{r}
+
+# Interpolação pelo modelo linear, ou Triangular Irregular Surface
+fit_TIN <- interp::interp( # using {interp}
+  x = dados_bario$X,           # vetores de coordenadas para entrada
+  y = dados_bario$Y,
+  z = dados_bario$BARIO,
+  xo = grd_template_sf$X,      # definição do grid de saída
+  yo = grd_template_sf$Y,
+  output = "points",
+  # Dados com coordenadas duplicadas são agregados pela média (ex. mais de uma coleta no mesmo poço)
+  duplicate = "mean",
+  # Define se interpolação é linear ou por spline
+  linear = FALSE,
+  # Aciona extrapolação para valores fora dos limites das coordenadas dos pontos originais
+  extrap = TRUE
+) %>% bind_cols()
+
+
+# Triangular Irregular Surface
+interp_TIN <- raster::rasterFromXYZ(fit_TIN, crs = crs_raster_format)
+
+```
+
+```{r}
+
+# Plota o mapa interpolado
+# Ref.: https://swilke-geoscience.net/post/spatial_interpolation/
+
+plot_my_rasters <- function(raster_object, raster_name){
+  
+  df <- rasterToPoints(raster_object) %>% as_tibble()
+  colnames(df) <- c("X", "Y", "Z")
+  
+  ggplot(df, aes(x = X, y = Y, fill = Z)) +
+    geom_raster() +
+    ggtitle(label = raster_name) +
+    scale_fill_viridis(option = "G") +
+    theme_bw() +
+    theme(
+      axis.text = element_blank(),
+      axis.title = element_blank(),
+      axis.ticks = element_blank()
+    )
+}
+
+rasterlist <- list(
+    "Triangular Irregular Surface" = interp_TIN 
+  )
+
+plotlist <- map2(
+  rasterlist,
+  names(rasterlist),
+  plot_my_rasters
+)
+
+(plotlist[[1]])
+
+```
+
+
+
+```{r}
+
+# ----                 5 - Análise Final:                     ---- #
+# ----  Preparação de Dados para uso em Poços não amostrados  ---- #
+
+
+# Leitura do arquivo de dados dos poços 
+wells_analysis <- read.csv("C:/Users/bevq/OneDrive - PETROBRAS/Documents/R/R_Projects/Ref_Criticidade_2023.csv", sep = ";")
+
+# Inspeção da tabela importada
+wells_analysis
+# valores já foram importados nos formatos adequados
+# incluem: coordenadas, dados de produção (acumuladas dos últimos 8 meses), avaliação preliminar de criticidade (níveis 1 a 4, sendo 5 N/D) e flags para apontar se injetor ou produtor
+
+```
+
+
+```{r}
+
+#---- Realiza interpolações para todos os componentes analisados ----#
+
+fit_Acetato <- interp::interp(
+x = dados_agua_coord$X,       # vetores de coordenadas para entrada
+y = dados_agua_coord$Y,
+z = dados_agua_coord$ACETATO,
+xo = wells_analysis$X,        # definição dos pontos ou grid de saída
+yo = wells_analysis$Y,
+output = "points",
+duplicate = "mean",
+linear = TRUE,
+extrap = TRUE
+) %>% bind_cols()
+
+fit_Bario <- interp::interp(
+x = dados_agua_coord$X,       # vetores de coordenadas para entrada
+y = dados_agua_coord$Y,
+z = dados_agua_coord$BARIO,
+xo = wells_analysis$X,        # definição dos pontos ou grid de saída
+yo = wells_analysis$Y,
+output = "points",
+duplicate = "mean",
+linear = TRUE,
+extrap = TRUE
+) %>% bind_cols()
+
+fit_Bicarbon <- interp::interp(
+x = dados_agua_coord$X,       # vetores de coordenadas para entrada
+y = dados_agua_coord$Y,
+z = dados_agua_coord$BICARBON,
+xo = wells_analysis$X,        # definição dos pontos ou grid de saída
+yo = wells_analysis$Y,
+output = "points",
+duplicate = "mean",
+linear = TRUE,
+extrap = TRUE
+) %>% bind_cols()
+
+fit_Brometo <- interp::interp(
+x = dados_agua_coord$X,       # vetores de coordenadas para entrada
+y = dados_agua_coord$Y,
+z = dados_agua_coord$BROMETO,
+xo = wells_analysis$X,        # definição dos pontos ou grid de saída
+yo = wells_analysis$Y,
+output = "points",
+duplicate = "mean",
+linear = TRUE,
+extrap = TRUE
+) %>% bind_cols()
+
+fit_Calcio <- interp::interp(
+x = dados_agua_coord$X,       # vetores de coordenadas para entrada
+y = dados_agua_coord$Y,
+z = dados_agua_coord$CALCIO,
+xo = wells_analysis$X,        # definição dos pontos ou grid de saída
+yo = wells_analysis$Y,
+output = "points",
+duplicate = "mean",
+linear = TRUE,
+extrap = TRUE
+) %>% bind_cols()
+
+fit_Cloreto <- interp::interp(
+x = dados_agua_coord$X,       # vetores de coordenadas para entrada
+y = dados_agua_coord$Y,
+z = dados_agua_coord$CLORETO,
+xo = wells_analysis$X,        # definição dos pontos ou grid de saída
+yo = wells_analysis$Y,
+output = "points",
+duplicate = "mean",
+linear = TRUE,
+extrap = TRUE
+) %>% bind_cols()
+
+fit_Estronci <- interp::interp(
+x = dados_agua_coord$X,       # vetores de coordenadas para entrada
+y = dados_agua_coord$Y,
+z = dados_agua_coord$ESTRONCI,
+xo = wells_analysis$X,        # definição dos pontos ou grid de saída
+yo = wells_analysis$Y,
+output = "points",
+duplicate = "mean",
+linear = TRUE,
+extrap = TRUE
+) %>% bind_cols()
+
+fit_Ferrotot <- interp::interp(
+x = dados_agua_coord$X,       # vetores de coordenadas para entrada
+y = dados_agua_coord$Y,
+z = dados_agua_coord$FERROTOT,
+xo = wells_analysis$X,        # definição dos pontos ou grid de saída
+yo = wells_analysis$Y,
+output = "points",
+duplicate = "mean",
+linear = TRUE,
+extrap = TRUE
+) %>% bind_cols()
+
+fit_Magnesio <- interp::interp(
+x = dados_agua_coord$X,       # vetores de coordenadas para entrada
+y = dados_agua_coord$Y,
+z = dados_agua_coord$MAGNESIO,
+xo = wells_analysis$X,        # definição dos pontos ou grid de saída
+yo = wells_analysis$Y,
+output = "points",
+duplicate = "mean",
+linear = TRUE,
+extrap = TRUE
+) %>% bind_cols()
+
+fit_Potassio <- interp::interp(
+x = dados_agua_coord$X,       # vetores de coordenadas para entrada
+y = dados_agua_coord$Y,
+z = dados_agua_coord$POTASSIO,
+xo = wells_analysis$X,        # definição dos pontos ou grid de saída
+yo = wells_analysis$Y,
+output = "points",
+duplicate = "mean",
+linear = TRUE,
+extrap = TRUE
+) %>% bind_cols()
+
+fit_Sodio <- interp::interp(
+x = dados_agua_coord$X,       # vetores de coordenadas para entrada
+y = dados_agua_coord$Y,
+z = dados_agua_coord$SODIO,
+xo = wells_analysis$X,        # definição dos pontos ou grid de saída
+yo = wells_analysis$Y,
+output = "points",
+duplicate = "mean",
+linear = TRUE,
+extrap = TRUE
+) %>% bind_cols()
+
+fit_Sulfato <- interp::interp(
+x = dados_agua_coord$X,       # vetores de coordenadas para entrada
+y = dados_agua_coord$Y,
+z = dados_agua_coord$SULFATO,
+xo = wells_analysis$X,        # definição dos pontos ou grid de saída
+yo = wells_analysis$Y,
+output = "points",
+duplicate = "mean",
+linear = TRUE,
+extrap = TRUE
+) %>% bind_cols()
+
+
+```
+
+
+```{r}
+
+# Adiciona os resultados das interpolações ao DataFrame dos poços
+wells_analysis$Acetato_itp <- fit_Acetato$z
+wells_analysis$Bario_itp <- fit_Bario$z
+wells_analysis$Bicarbon_itp <- fit_Bicarbon$z
+wells_analysis$Brometo_itp <- fit_Brometo$z
+wells_analysis$Calcio_itp <- fit_Calcio$z
+wells_analysis$Cloreto_itp <- fit_Cloreto$z
+wells_analysis$Estronci_itp <- fit_Estronci$z
+wells_analysis$Ferrotot_itp <- fit_Ferrotot$z
+wells_analysis$Magnesio_itp <- fit_Magnesio$z
+wells_analysis$Potassio_itp <- fit_Potassio$z
+wells_analysis$Sodio_itp <- fit_Sodio$z
+wells_analysis$Sulfato_itp <- fit_Sulfato$z
+
+wells_analysis
+
+# Remove as linhas para as quais não há dados de análise de água (NA em alguma das colunas dos íons)
+wells_analysis_clean <- wells_analysis[complete.cases(wells_analysis[ , 12:23]), ]
+wells_analysis_clean
+
+# Remove as linhas para as quais não há produção
+wells_analysis_prod <- wells_analysis_clean[(wells_analysis_clean$Prod==1), ]
+wells_analysis_prod
+
+
+```
+```{r}
+# Plota correlação entre variáveis para o conjunto de poços completo
+
+cor(wells_analysis_clean[, c(2,3,4,12,13,14,15,16,17,18,19,20,21,22,23)])
+corrplot(cor(wells_analysis_clean[,c(2,3,4,12,13,14,15,16,17,18,19,20,21,22,23)]), type="upper", order="alphabet", tl.col="black", tl.srt=45, tl.cex = 1.0)
+
+```
+
+```{r}
+
+# ----                  6 - Análise Final:                      ---- #
+# ----  PCA para o conjunto de poços com os dados interpolados  ---- #
+# (para todo o conjunto de poços, prod.+inj., sem dados de produção) #
+
+# Calcula as componentes principais com normalização:
+#wells_analysis_clean.pca2 <- prcomp(wells_analysis_clean[,c(7,12,13,14,15,16,17,18,19,20,21,22,23)], scale.=TRUE)
+wells_analysis_clean.pca2 <- prcomp(wells_analysis_clean[,c(12,13,14,15,16,17,18,19,20,21,22,23)], scale.=TRUE)
+wells_analysis_clean.pca2
+
+# Apresenta resumo das componentes principais:
+summary(wells_analysis_clean.pca2)
+
+# Mostra as primeiras componentes principais:
+head(wells_analysis_clean.pca2$x)
+
+# calcula desvio padrao de cada componente principal
+pr_std_dev <- wells_analysis_clean.pca2$sdev
+
+# calcula variancia
+pr_var <- pr_std_dev^2
+
+# mostra variancia das 4 componentes principais
+pr_var
+
+# Proporcao da variancia explicada:
+prop_varex <- pr_var/sum(pr_var)
+prop_varex
+
+# Visualiza proporcao da variancia explicada:
+plot(prop_varex, xlab="Componentes Principais", 
+     ylab = "Proporcao de Variancia Explicada", type = "b")
+
+# Visualiza variancia acumulada:
+plot(cumsum(prop_varex), xlab = "Componentes Principais",
+     ylab = "Variancia Explicada Acumulada", type = "b")
+
+# Exibicao de como os atributos serao transformados:
+biplot(wells_analysis_clean.pca2, xlab="Componente Principal 1", 
+       ylab="Componente Principal 2", scale=0)
+
+# Visualizacao de componentes principais:
+plot(wells_analysis_clean.pca2$x[,1:2], col=as.numeric(unlist(wells_analysis_clean[,9])))
+legend("bottomleft", legend = list("Baixa", "Média", "Alta", "Altíssima", "N/D"), col = 1:5, pch = 19, bty = "n")
+
+```
+
+```{r}
+
+# ----                  7 - Análise Final:                      ---- #
+# ----  PCA para o conjunto de poços com os dados interpolados  ---- #
+#  (trabalhando apenas com produtores, incluindo dados de produção)  #
+
+# Calcula as componentes principais com normalização:
+wells_analysis_prod.pca2 <- prcomp(wells_analysis_prod[,c(12,13,14,15,16,17,18,19,20,21,22,23)], scale.=TRUE)
+wells_analysis_prod.pca2
+
+# Apresenta resumo das componentes principais:
+summary(wells_analysis_prod.pca2)
+
+# Mostra as primeiras componentes principais:
+head(wells_analysis_prod.pca2$x)
+
+# calcula desvio padrao de cada componente principal
+pr_std_dev <- wells_analysis_prod.pca2$sdev
+
+# calcula variancia
+pr_var <- pr_std_dev^2
+
+# mostra variancia das 4 componentes principais
+pr_var
+
+# Proporcao da variancia explicada:
+prop_varex <- pr_var/sum(pr_var)
+prop_varex
+
+# Visualiza proporcao da variancia explicada:
+plot(prop_varex, xlab="Principal Components", 
+     ylab = "Proportion of Explained Variance", type = "b")
+
+# Visualiza variancia acumulada:
+plot(cumsum(prop_varex), xlab = "Principal Components",
+     ylab = "Cumulative Variance", type = "b")
+
+# Exibicao de como os atributos serao transformados:
+biplot(wells_analysis_prod.pca2, xlab="Componente Principal 1", 
+       ylab="Componente Principal 2", scale=0)
+
+# Visualizacao de componentes principais:
+plot(wells_analysis_prod.pca2$x[,1:2], col=as.numeric(unlist(wells_analysis_prod[,9])), pch = 19)
+legend("topleft", legend = list("Very Low", "Low", "Medium", "High"), col = 1:5, pch = 19, bty = "n")
+
+```
+```{r}
+
+#install.packages("plotly")
+library(plotly)
+
+df_wells_analysis_prod <- data.frame(wells_analysis_prod.pca2$x[,1:3])
+df_wells_analysis_prod
+
+# Visualizacao de componentes principais:
+fig_3d <- plot_ly(df_wells_analysis_prod, x = ~PC1, y = ~PC2, z = ~PC3, color= as.numeric(unlist(wells_analysis_prod[,9])))
+fig_3d
+
+```
+
+```{r}
+
+# Normalização
+wells_std <- scale(wells_analysis_prod[,c(12,13,14,15,16,17,18,19,20,21,22,23)], center = TRUE, scale = TRUE)
+summary(wells_std)
+head(wells_std)
+
+```
+
+```{r}
+
+# ----- Avaliação de outros métodos de redução de dimensionalidade ----- #
+
+# Aplica a tecnica MDS
+library(MASS)
+wells.mds <- isoMDS(dist(wells_std), k=2)
+
+# Visualiza o resultado
+plot(wells.mds$points, col=as.numeric(unlist(wells_analysis_prod[,9])),
+     xlab="Dimension 1", ylab="Dimension 2", main="MDS", pch=16)
+
+# Aplica a tecnica ICA
+library(fastICA)
+wells.ica <- fastICA(wells_std, 2, maxit = 200, tol = 0.0001)
+
+# Visualiza o resultado
+plot(wells.ica$X, col=as.numeric(unlist(wells_analysis_prod[,9])), xlab="Dimension 1", ylab="Dimension 2", main="ICA", pch=16)
+
+# Aplica a tecnica LLE
+library(lle)
+wells.lle <- lle(wells_std, m=2, k=2, reg=2, 
+                ss=FALSE, id=TRUE, v=0.9)
+
+# Visualiza o resultado
+plot(wells.lle$Y, col=as.numeric(unlist(wells_analysis_prod[,9])),
+      xlab="Dimensão 1", ylab="Dimensão 2", main="LLE", pch=16)
+
+# Aplica a tecnica Sammon Mapping
+wells.sammon <- sammon(dist(wells_std), k=2)
+
+# Visualiza o resultado
+plot(wells.sammon$points, col=as.numeric(unlist(wells_analysis_prod[,9])),
+      xlab="Dimensão 1", ylab="Dimensão 2", main="Sammon", pch=16)
+
+# Executa t-SNE:
+library(Rtsne)
+set.seed(42) # semente fixa para reprodutibilidade
+tsne <- Rtsne(as.matrix(wells_std), perplexity = 10, dims=3)
+
+# Visualiza o resultado:
+plot(tsne$Y, col=as.numeric(unlist(wells_analysis_prod[,9])),  xlab="Dimensão 1", ylab="Dimensão 2", main="t-SNE", pch=16)
+
+# Executa UMAP:
+library(umap)
+set.seed(42) # semente fixa para reprodutibilidade 
+wells.umap <- umap(as.matrix(wells_std), controlscale = TRUE)
+
+# Visualiza o resultado
+plot(wells.umap$layout , col=as.numeric(unlist(wells_analysis_prod[,9])), xlab="Dimensão 1", ylab="Dimensão 2", main="UMAP", pch=16)
+
+```
+```{r}
+wells.ica <- fastICA(wells_std, 3, maxit = 200, tol = 0.0001)
+df_wells_ica <- data.frame(wells.ica$X[,1:3])
+df_wells_ica
+
+# Visualizacao de componentes principais:
+fig_3d <- plot_ly(df_wells_ica, x = ~X, y = ~Y, z = ~Z, color= as.numeric(unlist(wells_analysis_prod[,9])))
+fig_3d
+
+# df_wells_analysis_prod <- data.frame(wells_analysis_prod.pca2$x[,1:3])
+# df_wells_analysis_prod
+
+# # Visualizacao de componentes principais:
+# fig_3d <- plot_ly(df_wells_analysis_prod, x = ~PC1, y = ~PC2, z = ~PC3, color= as.numeric(unlist(wells_analysis_prod[,9])))
+# fig_3d
+# 
+# df_wells_analysis_prod <- data.frame(wells_analysis_prod.pca2$x[,1:3])
+# df_wells_analysis_prod
+# 
+# # Visualizacao de componentes principais:
+# fig_3d <- plot_ly(df_wells_analysis_prod, x = ~PC1, y = ~PC2, z = ~PC3, color= as.numeric(unlist(wells_analysis_prod[,9])))
+# fig_3d
+# 
+# df_wells_analysis_prod <- data.frame(wells_analysis_prod.pca2$x[,1:3])
+# df_wells_analysis_prod
+# 
+# # Visualizacao de componentes principais:
+# fig_3d <- plot_ly(df_wells_analysis_prod, x = ~PC1, y = ~PC2, z = ~PC3, color= as.numeric(unlist(wells_analysis_prod[,9])))
+# fig_3d
+# 
+# df_wells_analysis_prod <- data.frame(wells_analysis_prod.pca2$x[,1:3])
+# df_wells_analysis_prod
+# 
+# # Visualizacao de componentes principais:
+# fig_3d <- plot_ly(df_wells_analysis_prod, x = ~PC1, y = ~PC2, z = ~PC3, color= as.numeric(unlist(wells_analysis_prod[,9])))
+# fig_3d
+# 
+# df_wells_analysis_prod <- data.frame(wells_analysis_prod.pca2$x[,1:3])
+# df_wells_analysis_prod
+# 
+# # Visualizacao de componentes principais:
+# fig_3d <- plot_ly(df_wells_analysis_prod, x = ~PC1, y = ~PC2, z = ~PC3, color= as.numeric(unlist(wells_analysis_prod[,9])))
+# fig_3d
+
+
+```
+
+```{r}
+
+# ----                    8 - Análise Final:                        ---- #
+# ----  k-means para o conjunto de poços com os dados interpolados  ---- #
+#    (trabalhando apenas com produtores, incluindo dados de produção)    #
+
+
+# Aplica a tecnica K-Means com dois grupos
+set.seed(123)
+k2 <- kmeans(wells_std, centers=2, nstart=25)
+#k2
+
+# Mostra o tamanho dos grupos
+k2$size
+
+# Mostra o numero dos grupos para cada amostra
+k2$cluster
+#head(k2$cluster, 4)
+
+# Mostra os centroides dos grupos
+k2$centers
+
+# Visualiza os resultados
+fviz_cluster(k2, data=wells_std)
+
+# Testa diferentes numeros de grupos
+k3 <- kmeans(wells_std, centers=3, nstart=25)
+k4 <- kmeans(wells_std, centers=4, nstart=25)
+k5 <- kmeans(wells_std, centers=5, nstart=25)
+
+# Mostra os agrupamentos
+p1 <- fviz_cluster(k2, geom="point", data=wells_std) + ggtitle("k=2")
+p2 <- fviz_cluster(k3, geom="point", data=wells_std) + ggtitle("k=3")
+p3 <- fviz_cluster(k4, geom="point", data=wells_std) + ggtitle("k=4")
+p4 <- fviz_cluster(k5, geom="point", data=wells_std) + ggtitle("k=5")
+
+library(gridExtra)
+grid.arrange(p1, p2, p3, p4, nrow=2)
+
+# Determina o numero de grupos
+set.seed(123)
+fviz_nbclust(wells_std, kmeans, k.max = 15, method="wss")
+
+# Determina o numero de grupos (medida de silhueta)
+fviz_nbclust(wells_std, kmeans, k.max = 15, method="silhouette")
+
+
+# Uso de conjunto de métricas para determinar o melhor k
+
+library(NbClust)
+nb <- NbClust(wells_std, distance="euclidean", 
+              min.nc=2, max.nc=10, method="complete", 
+              index="all")
+
+library(factoextra)
+fviz_nbclust(nb) + theme_minimal()
+
+
+# Plot com o melhor número de k
+fviz_cluster(k4, data = wells_std)
+
+# Adiciona classificacao aos dados originais
+well_clust <- cbind(wells_analysis_prod, kmeans3=k3$cluster)
+well_clust <- cbind(well_clust, kmeans4=k4$cluster)
+well_clust
+
+```
+
+```{r}
+
+# ----- Avaliação com o Fuzzy c-means ----- #
+
+library(fclust)
+library(cluster)
+library(ppclust)
+
+# Aplica a tecnica Fuzzy C-Means com diversos tamanhos de grupos
+set.seed(123)
+fcm2 <- fcm(wells_std, centers=2)
+fcm3 <- fcm(wells_std, centers=3)
+fcm4 <- fcm(wells_std, centers=4)
+fcm5 <- fcm(wells_std, centers=5)
+
+# Plota para 2 grupos
+fcm2_plot <- ppclust2(fcm2, "kmeans")
+fviz_cluster(fcm2_plot, data = wells_std, 
+  ellipse.type = "convex",
+  palette = "jco",
+  repel = TRUE)
+
+# Plota para 3 grupos
+fcm3_plot <- ppclust2(fcm3, "kmeans")
+fviz_cluster(fcm3_plot, data = wells_std, 
+  ellipse.type = "convex",
+  palette = "jco",
+  repel = TRUE)
+
+# Plota para 4 grupos
+fcm4_plot <- ppclust2(fcm4, "kmeans")
+fviz_cluster(fcm4_plot, data = wells_std, 
+  ellipse.type = "convex",
+  palette = "jco",
+  repel = TRUE)
+
+# Plota para 5 grupos
+fcm5_plot <- ppclust2(fcm5, "kmeans")
+fviz_cluster(fcm5_plot, data = wells_std, 
+  ellipse.type = "convex",
+  palette = "jco",
+  repel = TRUE)
+
+plotcluster(fcm4, cp = 1, trans = TRUE)
+wells_std
+```
+
+
+```{r}
+# ----- Avaliação com Mapas de Kohonen (Self-Organizing Maps) ----- #
+
+# install.packages("kohonen")
+library(kohonen)
+grid_som <- somgrid(xdim = 4, ydim = 4, topo = "rectangular")
+
+set.seed(2023)
+
+SOM_model <- som(X = wells_std, grid = grid_som)
+
+plot(SOM_model, type = "counts")
+
+plot(SOM_model, type = "property", property = getCodes(SOM_model)[,2], main = colnames(wells_std)[2])
+
+plot(SOM_model, type = "codes")
+
+
+
+SOM_pred <- predict(SOM_model)
+
+plot(SOM_model, type = "mapping", classif = SOM_pred, pchs = wells_std[,0])
+
+
+SOM_pred
+
+```
